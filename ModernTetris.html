@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Modern Tetris</title>
+  <style>
+    body {
+      text-align: center;
+      font-family: monospace;
+      color: white;
+      background: #000;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start; /* Align to top to see content if page is too short */
+      min-height: 100vh;
+      margin: 0;
+      padding: 10px;
+      box-sizing: border-box;
+    }
+    canvas { background: #111; display: block; /* margin: 0 auto; will be handled by flex parent or specific styling */ }
+    #tetris {
+      border: 3px solid #666; /* More visible border */
+      box-shadow: 0 0 15px #555; /* Glow effect */
+    }
+    #game-container {
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      margin: 10px 0;
+    }
+    #left-panel, #right-panel {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      width: 150px; /* Fixed width for side panels */
+    }
+    #left-panel { margin-right: 15px; }
+    #right-panel { margin-left: 15px; }
+    #held canvas, #nextCanvas { border: 1px solid #333; } /* Corrected ID for next canvas */
+    #held, #next, #scoreboard { margin-bottom: 15px; text-align: center; width: 100%;}
+    #scoreboard { font-size: 1.2em; margin-top: 0; /* Scoreboard specific margin */}
+    #controls { margin-top: 15px; margin-bottom: 15px; max-width: 500px; line-height: 1.5; }
+    button { margin-top: 15px; padding: 10px 20px; font-size: 1em; cursor: pointer; background-color: #333; color: white; border: none; border-radius: 5px;}
+    button:hover { background-color: #555; }
+    h1 { margin-bottom: 10px; margin-top: 0; }
+  </style>
+</head>
+<body>
+  <h1>Modern Tetris</h1>
+  <div id="game-container">
+    <div id="left-panel">
+      <div id="scoreboard">Score: <span id="score">0</span></div>
+      <div id="held">Held<br><canvas id="hold" width="120" height="120"></canvas></div>
+    </div>
+    <canvas id="tetris" width="300" height="600"></canvas>
+    <div id="right-panel">
+      <div id="next">Next<br><canvas id="nextCanvas" width="120" height="360"></canvas></div>
+    </div>
+  </div>
+  <div id="controls">Press Arrow Keys to Move, Up to Rotate, Down to Soft Drop, Space to Hard Drop, C to Hold</div>
+  <button onclick="restart()">Restart</button>
+  <script>
+    const canvas = document.getElementById('tetris');
+    const context = canvas.getContext('2d');
+    context.scale(30, 30);
+
+    const holdCanvas = document.getElementById('hold');
+    const holdCtx = holdCanvas.getContext('2d');
+    holdCtx.scale(30, 30);
+
+    const nextCanvas = document.getElementById('nextCanvas');
+    const nextCtx = nextCanvas.getContext('2d');
+    nextCtx.scale(30, 30);
+
+    const matrix = [
+      [[0,0,0],[1,1,1],[0,1,0]], // T
+      [[2,2],[2,2]],             // O
+      [[0,3,0],[0,3,0],[0,3,3]], // J
+      [[0,4,0],[0,4,0],[4,4,0]], // L
+      [[0,5,5],[5,5,0],[0,0,0]], // S
+      [[6,6,0],[0,6,6],[0,0,0]], // Z
+      [[0,0,0,0],[7,7,7,7],[0,0,0,0],[0,0,0,0]], // I
+    ];
+
+    const colors = [null,'#8000ff','#ffff00','#0000ff','#ffa500','#00ff00','#ff0000','#00ffff'];
+    let arena = createMatrix(10, 20);
+    let score = 0;
+    let level = 0;
+    let linesCleared = 0;
+    let lockDelayTimer = 0;
+    const lockDelay = 1000;
+    
+    // 添加特效相关变量
+    let flashTimer = 0;
+    let flashDuration = 150; // 闪光持续时间（毫秒）
+    let tSpinTimer = 0;
+    let tSpinDuration = 300; // T-Spin提示持续时间（毫秒）
+    let lastMoveWasRotation = false;
+    let lastRotationPoint = null;
+
+    // SRS踢墙数据
+    const wallKickData = {
+        // JLSTZ pieces
+        default: [
+            [[0,0], [-1,0], [-1,1], [0,-2], [-1,-2]], // 0->R
+            [[0,0], [1,0], [1,-1], [0,2], [1,2]],     // R->0
+            [[0,0], [1,0], [1,1], [0,-2], [1,-2]],    // R->2
+            [[0,0], [-1,0], [-1,-1], [0,2], [-1,2]],  // 2->R
+        ],
+        // I piece
+        I: [
+            [[0,0], [-2,0], [1,0], [-2,-1], [1,2]],   // 0->R
+            [[0,0], [2,0], [-1,0], [2,1], [-1,-2]],   // R->0
+            [[0,0], [-1,0], [2,0], [-1,2], [2,-1]],   // R->2
+            [[0,0], [1,0], [-2,0], [1,-2], [-2,1]],   // 2->R
+        ]
+    };
+
+    function createMatrix(w,h) {
+      const m = [];
+      while (h--) m.push(new Array(w).fill(0));
+      return m;
+    }
+
+    function drawMatrix(m, offset, ctx = context) {
+      m.forEach((row,y) => row.forEach((v,x) => {
+        if (v !== 0) {
+          ctx.fillStyle = colors[v];
+          ctx.fillRect(x + offset.x, y + offset.y, 1, 1);
+        }
+      }));
+    }
+
+    function drawHoldPiece() {
+      holdCtx.clearRect(0, 0, holdCanvas.width, holdCanvas.height);
+      if (holdPieceType !== -1) { // Check against -1 for empty hold
+        const pieceMatrix = matrix[holdPieceType];
+        const canvasUnitWidth = holdCanvas.width / 30;
+        const canvasUnitHeight = holdCanvas.height / 30;
+        const offsetX = (canvasUnitWidth - pieceMatrix[0].length) / 2;
+        const offsetY = (canvasUnitHeight - pieceMatrix.length) / 2;
+        drawMatrix(pieceMatrix, {x: offsetX, y: offsetY}, holdCtx);
+      }
+    }
+
+    function drawNextQueue() {
+      nextCtx.clearRect(0, 0, nextCanvas.width, nextCanvas.height);
+      const canvasUnitWidth = nextCanvas.width / 30;
+      const pieceUnitHeight = 4; // Each piece slot is 4 units high in a 4xN canvas
+
+      // Ensure bag has pieces before drawing. playerReset calls ensureBagIsStocked.
+      for (let i = 0; i < Math.min(3, bag.length); i++) {
+        // bag.length - 1 - i gives pieces from the "next up" end of the bag
+        const pieceIndex = bag[bag.length - 1 - i];
+        if (typeof pieceIndex === 'undefined') continue;
+
+        const pieceMatrixToDraw = matrix[pieceIndex];
+        const offsetX = (canvasUnitWidth - pieceMatrixToDraw[0].length) / 2;
+        const slotOffsetY = i * pieceUnitHeight;
+        const pieceOffsetY = (pieceUnitHeight - pieceMatrixToDraw.length) / 2;
+        drawMatrix(pieceMatrixToDraw, {x: offsetX, y: slotOffsetY + pieceOffsetY}, nextCtx);
+      }
+    }
+
+    function merge(arena, player) {
+      player.matrix.forEach((row,y) => row.forEach((v,x) => {
+        if (v !== 0) arena[y + player.pos.y][x + player.pos.x] = v;
+      }));
+    }
+
+    function collide(arena, player) {
+      const [m,o] = [player.matrix, player.pos];
+      for (let y=0; y<m.length; ++y) {
+        for (let x=0; x<m[y].length; ++x) {
+          if (m[y][x] && (arena[y+o.y] && arena[y+o.y][x+o.x]) !== 0) return true;
+        }
+      }
+      return false;
+    }
+
+    function rotate(matrix, dir) {
+      for (let y=0; y<matrix.length; ++y) {
+        for (let x=0; x<y; ++x) [matrix[x][y],matrix[y][x]] = [matrix[y][x],matrix[x][y]];
+      }
+      if (dir > 0) matrix.forEach(row => row.reverse());
+      else matrix.reverse();
+    }
+
+    function attemptRotation(dir) {
+        const originalState = {
+            matrix: JSON.parse(JSON.stringify(player.matrix)),
+            x: player.pos.x,
+            y: player.pos.y,
+            rotation: player.rotation
+        };
+
+        rotate(player.matrix, dir);
+        player.rotation = (player.rotation + (dir > 0 ? 1 : 3)) % 4;
+
+        // 选择正确的踢墙数据
+        const kicks = player.pieceTypeIndex === 6 ? wallKickData.I : wallKickData.default;
+        const kickSet = dir > 0 ? kicks[player.rotation] : kicks[(player.rotation + 1) % 4];
+
+        // 尝试所有可能的踢墙位置
+        let kickSuccess = false;
+        for (const [dx, dy] of kickSet) {
+            player.pos.x = originalState.x + dx;
+            player.pos.y = originalState.y - dy; // 注意：y轴是反的
+
+            if (!collide(arena, player)) {
+                kickSuccess = true;
+                lastMoveWasRotation = true;
+                lastRotationPoint = {x: player.pos.x, y: player.pos.y};
+                break;
+            }
+        }
+
+        // 如果所有踢墙都失败，恢复原始状态
+        if (!kickSuccess) {
+            player.matrix = originalState.matrix;
+            player.pos.x = originalState.x;
+            player.pos.y = originalState.y;
+            player.rotation = originalState.rotation;
+            return false;
+        }
+
+        // 检查是否为T-Spin
+        if (player.pieceTypeIndex === 0) { // T piece
+            const corners = checkFilledCorners();
+            if (corners >= 3 && lastMoveWasRotation) {
+                tSpinTimer = tSpinDuration;
+                score += 400 * (level + 1); // T-Spin额外分数
+                updateScore();
+            }
+        }
+
+        return true;
+    }
+
+    function checkFilledCorners() {
+        let corners = 0;
+        const positions = [
+            {x: player.pos.x, y: player.pos.y},           // 左上
+            {x: player.pos.x + 2, y: player.pos.y},       // 右上
+            {x: player.pos.x, y: player.pos.y + 2},       // 左下
+            {x: player.pos.x + 2, y: player.pos.y + 2}    // 右下
+        ];
+
+        for (const pos of positions) {
+            if (pos.x < 0 || pos.x >= arena[0].length || 
+                pos.y < 0 || pos.y >= arena.length || 
+                arena[pos.y][pos.x]) {
+                corners++;
+            }
+        }
+        return corners;
+    }
+
+    function playerDrop() {
+      player.pos.y++;
+      if (collide(arena, player)) {
+        player.pos.y--;
+        // Lock delay timer is handled by the main update loop when resting
+      } else {
+        lockDelayTimer = 0; // If it successfully drops, it's not resting, reset lock timer
+      }
+      dropCounter = 0; // Reset for the next auto-drop interval
+    }
+
+    function playerMove(dir) {
+      player.pos.x += dir;
+      if (collide(arena, player)) {
+        player.pos.x -= dir;
+      } else {
+        // If move is successful, check if it's resting and reset lock timer
+        const originalY = player.pos.y;
+        player.pos.y++;
+        if (collide(arena, player)) { // If it's resting at the new x,y
+            lockDelayTimer = 0;
+        }
+        player.pos.y = originalY; // Restore Y
+      }
+    }
+
+    function playerReset() {
+      ensureBagIsStocked(); // Ensure the bag has pieces
+
+      if (bag.length === 0) { 
+        console.error("Bag is empty after ensuring it's stocked. Game over or bug.");
+        // Handle game over more gracefully if needed
+        arena.forEach(row => row.fill(0));
+        score = 0;
+        level = 0;
+        linesCleared = 0;
+        updateScore();
+        // Potentially stop the game loop or show a game over message
+        return;
+      }
+
+      const t = bag.pop(); // Get piece from the "end" of the bag (next up)
+      player.pieceTypeIndex = t; // Store the type index
+      player.matrix = JSON.parse(JSON.stringify(matrix[t]));
+      player.pos.y = 0;
+      player.pos.x = (arena[0].length / 2 | 0) - (player.matrix[0].length / 2 | 0);
+      
+      lockDelayTimer = 0; // Reset lock timer for new piece
+
+      if (collide(arena, player)) {
+        arena.forEach(row => row.fill(0)); // Clear arena (game over)
+        score = 0;
+        level = 0;
+        linesCleared = 0;
+        // Bag should be refilled by restart logic if game over leads to restart
+        updateScore();
+        // Consider stopping the game or showing a game over screen
+      }
+      drawNextQueue(); // Update the "Next" display
+    }
+
+    function generateNewPieceSet() {
+        return [0,1,2,3,4,5,6].sort(() => Math.random() - 0.5);
+    }
+
+    function ensureBagIsStocked() {
+        // We want enough for current piece + 3 preview + a buffer (e.g., another 3) = 7
+        while (bag.length < 7) {
+            const newSet = generateNewPieceSet();
+            bag.unshift(...newSet); // Add new pieces to the "front" of the bag (to be popped later)
+        }
+    }
+
+    // Remove or comment out the old refillBag if it's no longer used directly
+    // function refillBag() {
+    //   bag = [0,1,2,3,4,5,6].sort(() => Math.random() - 0.5);
+    // }
+
+    function arenaSweep() {
+      let linesThisSweep = 0;
+      outer: for (let y = arena.length - 1; y >= 0; --y) {
+        for (let x = 0; x < arena[y].length; ++x) {
+          if (arena[y][x] === 0) {
+            continue outer;
+          }
+        }
+        // If we reach here, the row is full
+        const row = arena.splice(y, 1)[0].fill(0);
+        arena.unshift(row);
+        y++; // Account for the removed row, re-check the new row at this y index
+        linesThisSweep++;
+      }
+
+      if (linesThisSweep > 0) {
+        // Standard scoring, multiplied by (level + 1)
+        if (linesThisSweep === 1) score += 100 * (level + 1);
+        else if (linesThisSweep === 2) score += 300 * (level + 1);
+        else if (linesThisSweep === 3) score += 500 * (level + 1);
+        else if (linesThisSweep >= 4) score += 800 * (level + 1); // Tetris bonus
+
+        const oldLevel = level;
+        linesCleared += linesThisSweep; // Add cleared lines to total
+        level = Math.floor(linesCleared / 10); // Calculate new level based on total lines cleared
+
+        if (level > oldLevel) { // If level increased
+          dropInterval = Math.max(100, 1000 - level * 75); // Adjust speed
+          // console.log(`Level up to ${level}, dropInterval: ${dropInterval}`);
+        }
+        // updateScore(); // updateScore is called after arenaSweep in playerDrop/hardDrop/auto-lock
+      }
+    }
+
+    function updateScore() {
+      document.getElementById('score').innerText = score;
+    }
+
+    function draw() {
+      context.fillStyle = '#000';
+      context.fillRect(0, 0, canvas.width, canvas.height);
+
+      // 绘制闪光特效
+      if (flashTimer > 0) {
+          context.fillStyle = `rgba(255, 255, 255, ${flashTimer / flashDuration * 0.3})`;
+          context.fillRect(0, 0, canvas.width, canvas.height);
+      }
+
+      // 绘制T-Spin提示
+      if (tSpinTimer > 0) {
+          context.fillStyle = '#8000ff';
+          context.globalAlpha = tSpinTimer / tSpinDuration;
+          context.fillRect(0, 0, 3, 3);
+          context.globalAlpha = 1.0;
+      }
+
+      drawMatrix(arena, {x:0,y:0});
+      drawMatrix(player.matrix, player.pos);
+      drawMatrix(getGhost(), playerGhost);
+      drawHoldPiece();
+    }
+
+    function getGhost() {
+      let ghostY = player.pos.y;
+      while (!collide(arena, {matrix:player.matrix, pos:{x:player.pos.x, y:ghostY}})) ghostY++;
+      ghostY--;
+      playerGhost.y = ghostY;
+      return player.matrix;
+    }
+
+    function restart() {
+      arena = createMatrix(10,20);
+      bag = []; // Clear the bag
+      ensureBagIsStocked(); // Initial fill of the bag
+      score = 0;
+      level = 0;
+      linesCleared = 0;
+      dropInterval = 1000; // Reset drop interval for level 0
+      holdPieceType = -1; // Reset hold piece type index (-1 for empty)
+      holdUsed = false;
+      lockDelayTimer = 0; // Reset lock delay timer
+      playerReset(); // Gets the first piece and calls drawNextQueue
+      updateScore();
+      if (!animationFrameId) { // Start game loop if not already running
+        update();
+      }
+    }
+
+    let dropCounter = 0;
+    let dropInterval = 1000;
+    let lastTime = 0;
+    let delta = 0;
+    let animationFrameId = null; // To control the game loop
+
+    function update(time=0) {
+      delta = time - lastTime;
+      lastTime = time;
+
+      // Automatic lock-down logic
+      const currentY = player.pos.y;
+      player.pos.y++; // Try to move down
+      if (collide(arena, player)) { // If it collides by trying to move down one step (i.e., it's resting)
+          player.pos.y = currentY; // Move back up (important!)
+          lockDelayTimer += delta;
+          if (lockDelayTimer >= lockDelay) {
+              merge(arena, player);
+              playerReset();
+              arenaSweep();
+              updateScore();
+              holdUsed = false;
+              lockDelayTimer = 0; // Reset for the new piece
+              dropCounter = 0;    // Reset soft drop counter for the new piece
+          }
+      } else { // Can move down, so not truly "resting" on something solid yet
+          player.pos.y = currentY; // Move back up (important!)
+          lockDelayTimer = 0; // Reset if it can move down (not resting or floating)
+      }
+
+      dropCounter += delta;
+      if (dropCounter > dropInterval) {
+        playerDrop(); // This handles soft drop attempt and resets dropCounter
+      }
+
+      draw();
+      animationFrameId = requestAnimationFrame(update);
+    }
+
+    let lastKeyTime = 0;
+    const keyThrottle = 100;
+
+    document.addEventListener('keydown', e => {
+      const now = Date.now();
+      if (now - lastKeyTime < keyThrottle) return;
+      // lastKeyTime = now; // Moved after preventDefault checks
+
+      let preventDefault = false;
+
+      if (e.key === 'ArrowLeft') {
+        playerMove(-1);
+        preventDefaut = true;
+      } else if (e.key === 'ArrowRight') {
+        playerMove(1);
+        preventDefaut = true;
+      } else if (e.key === 'ArrowDown') {
+        playerDrop();
+        preventDefaut = true;
+      } else if (e.key === 'q') {
+        attemptRotation(-1);
+        preventDefaut = true;
+      } else if (e.key === 'w' || e.key === 'ArrowUp') {
+        attemptRotation(1);
+        preventDefaut = true;
+      } else if (e.key === ' ') { // Hard Drop
+        while (!collide(arena, player)) {
+          player.pos.y++;
+        }
+        player.pos.y--; // Move back to the last valid position before collision
+        
+        merge(arena, player);
+        playerReset(); 
+        arenaSweep();
+        updateScore();
+        holdUsed = false; 
+        lockDelayTimer = 0; 
+        dropCounter = 0;    
+        preventDefaut = true;
+      } else if (e.key === 'c') {
+        if (holdUsed) return;
+        if (holdPieceType === -1) { // If hold is empty
+          holdPieceType = player.pieceTypeIndex;
+          playerReset(); // Get new piece
+        } else { // Swap with hold
+          let tempType = player.pieceTypeIndex;
+          player.pieceTypeIndex = holdPieceType;
+          holdPieceType = tempType;
+          
+          player.matrix = JSON.parse(JSON.stringify(matrix[player.pieceTypeIndex]));
+          player.pos.y = 0; // Reset position for the new piece from hold
+          player.pos.x = (arena[0].length / 2 | 0) - (player.matrix[0].length / 2 | 0);
+          if (collide(arena, player)) { // Handle game over if new piece collides immediately
+             arena.forEach(row => row.fill(0));
+             score = 0;
+             level = 0;
+             linesCleared = 0;
+             updateScore();
+             // Consider stopping game or showing game over
+          }
+        }
+        holdUsed = true;
+        drawHoldPiece();
+        lockDelayTimer = 0; // Reset lock delay after hold
+        preventDefaut = true;
+      }
+
+      if(preventDefaut){
+        e.preventDefault(); // Prevent default browser action for game keys
+      }
+      lastKeyTime = now; // Update lastKeyTime after processing
+    });
+
+    let bag = [];
+    let holdPieceType = -1; // Stores the index of the piece type in matrix, -1 if empty
+    let holdUsed = false;
+    const player = { pos: {x:0,y:0}, matrix: null, pieceTypeIndex: -1 }; // Add pieceTypeIndex
+    const playerGhost = { y: 0 }; 
+
+    restart(); // Initialize and start the game
+    // update(); // update() is now called inside restart() to ensure it starts correctly
+  </script>
+</body>
+</html>

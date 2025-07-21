@@ -1,10 +1,12 @@
-# ZJX54959.github.io
+# [ZJX54959.github.io](https://github.com/ZJX54959/ZJX54959.github.io)
 
 ![visitors](https://visitor-badge.glitch.me/badge?page_id=ZJX54959&left_color=green&right_color=blue)
 
 Profile go --> [Here](https://github.com/ZJX54959)
 
 ![Typing SVG](https://readme-typing-svg.demolab.com/?lines=Quick+Brown+Fox+Jumps+Over+The+Lazy+Dog)
+
+[![Tetris Icon](https://www.svgrepo.com/show/40726/tetris.svg)](./ModernTetris.html)
 
 ---
 
