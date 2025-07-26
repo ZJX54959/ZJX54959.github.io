@@ -8,7 +8,7 @@
 
 [![Tetris Icon](https://www.svgrepo.com/show/40726/tetris.svg)](./ModernTetris.html)
 
-<h1><a href="https://zjx54959.github.io/TwitterFetcher/"><i class="fab fa-twitter"></i> Twitter媒体抓取器</a>a</h1>
+<h1><a href="https://zjx54959.github.io/TwitterFetcher/"><i class="fab fa-twitter"></i> Twitter媒体抓取器</a></h1>
 
 ---
 
